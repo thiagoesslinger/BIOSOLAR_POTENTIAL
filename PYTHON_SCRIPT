@@ -1,0 +1,155 @@
+## 0. importing...
+import arcpy
+import numpy as np
+import pandas as pd
+
+###############################################################################################################################
+## 1.   EXCEL READING 
+df_inputs = pd.read_excel('BIOSOLAR_POTENTIAL_INPUT.xlsx',sheet_name = 'INPUT_DATA')
+input_lidar = df_inputs['FILE NAME'][0]
+input_LU = df_inputs['FILE NAME'][1]
+input_UHI = df_inputs['FILE NAME'][2]
+input_number_suitable_area = df_inputs['FILE NAME'][3]
+df_data_solar = pd.read_excel('BIOSOLAR_POTENTIAL_INPUT.xlsx',sheet_name = 'INPUT_SOLAR')
+
+###############################################################################################################################
+## 2.   ROOFTOP SUITABILITY ANALYSIS
+roof_slopes = arcpy.ddd.Slope(input_lidar,"roof_slopes",'DEGREE',1,'PLANAR','METER','GPU_THEN_CPU') # calculates slope
+roof_suitability = arcpy.sa.RasterCalculator(roof_slopes,"roof_suitability","Slope <= 10") # calculates slopes of 10 deg or less
+suitable_only = arcpy.management.SelectLayerByAttribute(roof_suitability,"NEW_SELECTION","Value == 1") # selects all roofs that are suitable (value = 1)
+suitable_only_poly = arcpy.conversion.RasterToPolygon(suitable_only,"suitable_only_poly", 'NO_SIMPLIFY') # converts suitable roofs into polygon file
+suitable_roofs = arcpy.management.SelectLayerByAttribute(suitable_only_poly,"NEW_SELECTION","Value >= 10") # selects slope-suitable roofs only of 10 m^2 or greater in area
+suitable_roofs_LU = arcpy.analysis.Intersect([suitable_roofs,input_LU],"suitable_roofs_LU") # finds intersect between suitable roofs and land use
+
+###############################################################################################################################
+## 3.   GREEN CONNECTIVITY ANALYSIS
+green_spaces = arcpy.management.SelectLayerByAttribute(input_LU,"NEW_SELECTION","Value in {510,519,530,550,580}") # selects green spaces from land use file
+green_raster = arcpy.conversion.PolygonToRaster(green_spaces,'LU',"green_raster",'CELL_CENTER','LU',0.5) # converts to raster
+green_point = arcpy.conversion.RasterToPoint(green_raster,"green_point", 'NO_SIMPLIFY') # converts to point
+green_kernel = arcpy.sa.KernelDensity(green_point,'NONE',0.5,300,'SQUARE_KILOMETERS','DENSITIES','PLANAR') # creates Kernel map
+#remap = np.linspace(min(green_kernel),max(green_kernel))
+#reclassify? [0]?
+kernel_poly = arcpy.conversion.RasterToPolygon(green_kernel,"kernel_poly",'NO_SIMPLIFY') # converts to polygon
+green_connectivity_analysis = arcpy.analysis.Intersect([kernel_poly,suitable_roofs],"green_connectivity_analysis") # finds intersect between layers
+
+###############################################################################################################################
+## 4.   SHADOW ANALYSIS
+## 4.1  INPUT PARAMETERS ##
+all_months = ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'] #months
+all_hours = ['6am','7am','8am','9am','10am','11am','12pm','1pm','2pm','3pm','4pm','5pm','6pm','7pm','8pm'] #hours of daylight
+datasets = arcpy.ListFeatureClasses()
+
+## 4.2   CREATION OF VARIABLES FOR CALCULATIONS BELOW ##
+temp_dates = ['first'] # creates temporary output list for dates
+sum_area = np.zeros(1,dtype=[('SUM_Shape_Area','<f8')]) # creates output table for shaded suitable rooftops
+percent_shaded = np.zeros(1,dtype='int') # creates output table for percent shaded
+percent_unshaded = np.zeros(1,dtype='int') # creates output table for percent unshaded
+
+## 4.3   HILLSHADE CODE ##
+for month in all_months: # loop for all months of the year
+    for hour in all_hours: # loop for every hour of daylight on the 15th day of the month
+        date_hour = month + '_' + hour #NAMING
+        if date_hour in datasets: # checks if there was daylight during this hour for the month of interest (if file exists)
+            #4.3.1   Hillshade tool
+            output_hillshade = date_hour + '_raw'
+            #use solar values from excel and then output based on this...
+            
+            #4.3.2   Raster to Polygon tool
+            output_polygon = date_hour
+            #select by attributes where shadow is 0
+            #convert to polygon using tool
+            
+            #4.3.2   Intersect tool [1]
+            output_intersect = date_hour + '_intersect' #NAMING
+            arcpy.analysis.Intersect([date_hour,suitable_roofs],output_intersect) # finds intersect between layers
+            
+            #4.3.3   Output features [2] [3]
+            #4.3.3.1 Updating date values for output
+            temp_dates.extend([date_hour])
+            
+            #4.3.3.2 Calculating sum of overlap areas [1]
+            output_sum = output_intersect + '_sum' #NAMING
+            arcpy.analysis.Statistics(output_intersect,output_sum,[['Shape_Area','SUM']]) # calculates sum of intersected layers in m^2
+            temp_sum = arcpy.da.FeatureClassToNumPyArray(output_sum,'SUM_Shape_Area') # converts into a NumPy table for Python usage
+            sum_area = np.concatenate((sum_area,temp_sum)) # adds sum value to the output table    
+            
+            #4.3.3.3 Calculating percent shaded/unshaded
+            temp_percent = temp_sum.astype(float) # conversion of data type for proper calculation
+            temp_percent = (temp_percent / input_number_suitable_area) * 100
+            percent_shaded = np.concatenate((percent_shaded,temp_percent))
+            
+            temp_percent = 100 - temp_percent
+            percent_unshaded = np.concatenate((percent_unshaded,temp_percent))
+            
+## 4.4   FINAL OUTPUT TABLE FOR HILLSHADE ANALYSIS [4] [5] ##
+#  4.4.1 Dates
+dates = np.array(temp_dates,dtype='str')
+df_dates = pd.DataFrame(dates)
+df_dates = df_dates.drop([0])
+
+#  4.4.2 Area summary
+df_area = pd.DataFrame(sum_area)
+df_area = df_area.drop([0]) #removes first row of zeros
+
+#  4.4.3 Shaded/unshaded summary
+df_shaded = pd.DataFrame(percent_shaded)
+df_shaded = df_shaded.drop([0]) #removes first row of zeros
+df_unshaded = pd.DataFrame(percent_unshaded)
+df_unshaded = df_unshaded.drop([0]) #removes first row of zeros
+
+#  4.4.4 Creation of dataframes for final output
+df_final = pd.DataFrame()
+df_final['DATES'] = df_dates
+df_final['SUM_AREA'] = df_area
+df_final['%_SHADED'] = df_shaded
+df_final['% UNSHADED'] = df_unshaded
+print(df_final)
+
+#  4.4.5 Writing results into Excel file [6]
+writer = pd.ExcelWriter("Hillshade_results.xlsx")
+df_final.to_excel(writer,sheet_name='HILLSHADE_ANALYSIS')
+writer.close()
+
+## 4.5 FINAL FIGURE CREATION
+#what to do: overlay only 0 values (shade) of raw hillshade files over suitable rooftops multiple times and make new raster of which cells appeared the most times (scale 0-143)
+# step 1: make for loop for each hillshade file
+# step 2: add raster overlay 1-by-1 and create new raster file until end have complete raster 0-144 range
+file_list = []
+for i in df_dates[0]: # loop for each hour-month combination recorded
+    #select only 0 values of raw hillshade
+    #combine for date now with new raster whereby if pixel counted for in any raster, it is 1, if both 2, if none 0.
+    #repeat
+    shadow_only = arcpy.management.SelectLayerByAttribute(i,"NEW_SELECTION","Value >= 0") #selects all values that are not purely 0
+    #delete all others
+    file_list.append(i)
+shadow_analysis = arcpy.analysis.CountOverlappingFeatures(file_list,'Shadow_analysis',0)
+
+###############################################################################################################################
+## 5.    UHI ANALYSIS
+UHI_poly = arcpy.conversion.RasterToPolygon(input_UHI,"UHI_poly",'NO_SIMPLIFY') # converts to polygon
+UHI_analysis = arcpy.analysis.Intersect([UHI_poly,suitable_roofs],"UHI_analysis") # finds intersect between layers
+
+###############################################################################################################################
+## 6.    MULTIPLE-CRITERIA SUITABILITY ANALYSIS
+## 6.1   GREEN CONNECTIVITY
+green_connectivity_raster = arcpy.conversion.PolygonToRaster(green_connectivity_analysis,'Value',"green_connectivity_raster",'CELL_CENTER','Value',0.5) # converts to raster
+
+## 6.2   SHADOW
+shadow_raster = arcpy.conversion.PolygonToRaster(shadow_analysis,'Value',"shadow_raster",'CELL_CENTER','Value',0.5) # converts to raster
+
+## 6.3   UHI
+UHI_raster = arcpy.conversion.PolygonToRaster(UHI_analysis,'Value',"UHI_raster",'CELL_CENTER','Value',0.5) # converts to raster
+UHI_extended_raster = arcpy.sa.RasterCalculator([UHI_analysis,suitable_roofs],[a,b],a+b,"UnionOf",0.5)
+
+## 6.4 SUITABILITY MODELER
+# FOLLOW INSTRUCTIONS IN EXCEL FILE...
+
+    
+## REFERENCES ##
+# [0] https://gis.stackexchange.com/questions/296580/reclassifying-certain-values-using-arcpy-in-arcgis-pro
+# [1] https://pro.arcgis.com/en/pro-app/latest/arcpy/data-access/what-is-the-data-access-module-.htm
+# [2] https://numpy.org/doc/stable/index.html
+# [3] https://stackoverflow.com/questions/20196159/how-to-append-multiple-values-to-a-list-in-python
+# [4] https://pandas.pydata.org/pandas-docs/stable/reference/io.html
+# [5] https://blog.finxter.com/5-best-ways-to-convert-a-python-numpy-array-to-a-table/
+# [6] https://www.geeksforgeeks.org/fastest-way-to-read-excel-file-in-python/
