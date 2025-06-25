@@ -110,16 +110,9 @@ df_final.to_excel(writer,sheet_name='HILLSHADE_ANALYSIS')
 writer.close()
 
 ## 4.5 FINAL FIGURE CREATION
-#what to do: overlay only 0 values (shade) of raw hillshade files over suitable rooftops multiple times and make new raster of which cells appeared the most times (scale 0-143)
-# step 1: make for loop for each hillshade file
-# step 2: add raster overlay 1-by-1 and create new raster file until end have complete raster 0-144 range
 file_list = []
 for i in df_dates[0]: # loop for each hour-month combination recorded
-    #select only 0 values of raw hillshade
-    #combine for date now with new raster whereby if pixel counted for in any raster, it is 1, if both 2, if none 0.
-    #repeat
     shadow_only = arcpy.management.SelectLayerByAttribute(i,"NEW_SELECTION","Value >= 0") #selects all values that are not purely 0
-    #delete all others
     file_list.append(i)
 shadow_analysis = arcpy.analysis.CountOverlappingFeatures(file_list,'Shadow_analysis',0)
 
