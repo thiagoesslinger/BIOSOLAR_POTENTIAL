@@ -27,8 +27,7 @@ green_spaces = arcpy.management.SelectLayerByAttribute(input_LU,"NEW_SELECTION",
 green_raster = arcpy.conversion.PolygonToRaster(green_spaces,'LU',"green_raster",'CELL_CENTER','LU',0.5) # converts to raster
 green_point = arcpy.conversion.RasterToPoint(green_raster,"green_point", 'NO_SIMPLIFY') # converts to point
 green_kernel = arcpy.sa.KernelDensity(green_point,'NONE',0.5,300,'SQUARE_KILOMETERS','DENSITIES','PLANAR') # creates Kernel map
-#remap = np.linspace(min(green_kernel),max(green_kernel))
-#reclassify? [0]?
+#Since the values of the Kernel map are arbitrary, this can be reclassified using the Reclassify tool [0]
 kernel_poly = arcpy.conversion.RasterToPolygon(green_kernel,"kernel_poly",'NO_SIMPLIFY') # converts to polygon
 green_connectivity_analysis = arcpy.analysis.Intersect([kernel_poly,suitable_roofs],"green_connectivity_analysis") # finds intersect between layers
 
